@@ -13,10 +13,12 @@ from .constants import MODE_LABELS, STATE_LABELS, DriveMode, DriveState
 from .core import (
     get_mapped_remote,
     list_system_mappings,
+    mount_drive,
     resolve_host,
     run_hidden,
     same_unc,
     server_from_unc,
+    set_explorer_label,
     tcp_reachable,
     unmount_drive,
     used_drive_letters,
@@ -498,15 +500,18 @@ if GUI_IMPORT_ERROR is None:
             self.table.doubleClicked.connect(lambda *_: self.edit_drive())
             self.table.cellClicked.connect(self._cell_clicked)
             header = self.table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
-            # 名称列给足默认宽度, 网络路径列按内容自适应
-            header.resizeSection(1, 130)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            header.resizeSection(0, 55)
+            header.resizeSection(1, 120)
+            header.resizeSection(3, 160)
+            header.resizeSection(4, 60)
+            header.resizeSection(6, 80)
             v.addWidget(self.table, 3)
 
             # 日志
@@ -695,6 +700,9 @@ if GUI_IMPORT_ERROR is None:
                     unmount_drive(old_letter)
             cfg.upsert(result)
             cfg.save()
+            # 同步 Windows 资源管理器显示名称
+            label = str(result.get("label", ""))
+            set_explorer_label(new_path, label)
             if password:
                 if result.get("save_cred"):
                     try:
@@ -708,6 +716,10 @@ if GUI_IMPORT_ERROR is None:
                     except Exception as e:
                         log.warning("保存凭据失败: %s", e)
                 self.main.monitor.set_session_pw(new_letter, password)
+            # 当场重挂: 如果当前未挂载或刚被卸载, 立刻挂载
+            mount_drive(new_letter, new_path,
+                        str(result.get("username", "")), password,
+                        save_cred=bool(result.get("save_cred", True)))
             self.refresh_table()
             self.main.monitor.trigger("配置变更")
 
@@ -716,14 +728,16 @@ if GUI_IMPORT_ERROR is None:
             if not letter:
                 return
             drive = self.main.cfg.get(letter)
+            display = str(drive.get("label") or drive["path"])
             w = MessageBox(
                 "确认删除",
-                f"删除 {letter}: ({drive['path']}) 的配置?", self.main,
+                f"删除 {letter}: ({display}) 的配置?", self.main,
             )
             if not w.exec():
                 return
             self.main.cfg.remove(letter)
             self.main.cfg.save()
+            set_explorer_label(str(drive["path"]), "")  # 清除资源管理器自定义名称
             self.main.statuses.pop(letter, None)
             self.refresh_table()
             log.info(
@@ -943,19 +957,21 @@ if GUI_IMPORT_ERROR is None:
 
         def _notify_status(self, letter: str, st: dict) -> None:
             state, text = str(st["state"]), str(st["text"])
+            drive = self.cfg.get(letter)
+            name = str(drive.get("label") or drive.get("path", letter)) if drive else letter
             if state == DriveState.MOUNTED:
                 InfoBar.success(
-                    f"{letter}: 挂载成功", text, parent=self,
+                    f"{name} ({letter}:)", text, parent=self,
                     position=InfoBarPosition.TOP, duration=2500,
                 )
             elif state == DriveState.UNMOUNTED:
                 InfoBar.info(
-                    f"{letter}:", text, parent=self,
+                    f"{name} ({letter}:)", text, parent=self,
                     position=InfoBarPosition.TOP, duration=2500,
                 )
             elif state == DriveState.ERROR:
                 InfoBar.error(
-                    f"{letter}: 操作失败", text, parent=self,
+                    f"{name} ({letter}:) 操作失败", text, parent=self,
                     position=InfoBarPosition.TOP, duration=4000,
                 )
 

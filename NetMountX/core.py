@@ -351,6 +351,37 @@ def mount_drive(
     return False, (out.splitlines()[-1] if out else f"net use 返回码 {rc}")
 
 
+def unc_to_mountpoints_key(unc: str) -> str:
+    """\\server\share -> ##server#share (注册表 MountPoints2 键名)。"""
+    clean = unc.replace("/", "\\").strip("\\")
+    parts = clean.split("\\", 1)
+    server = parts[0]
+    share = parts[1] if len(parts) > 1 else ""
+    return f"##{server}#{share}"
+
+
+def set_explorer_label(unc: str, label: str) -> None:
+    """设置网络驱动器在 Windows 资源管理器中显示的名称。
+    通过注册表 MountPoints2\\_LabelFromReg 实现。
+    label 为空则恢复默认名称。"""
+    key = unc_to_mountpoints_key(unc)
+    reg_path = (
+        f"HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\"
+        f"Explorer\\MountPoints2\\{key}"
+    )
+    if label.strip():
+        subprocess.run(
+            ["reg", "add", reg_path, "/v", "_LabelFromReg",
+             "/t", "REG_SZ", "/d", label.strip(), "/f"],
+            capture_output=True, creationflags=CREATE_NO_WINDOW,
+        )
+    else:
+        subprocess.run(
+            ["reg", "delete", reg_path, "/v", "_LabelFromReg", "/f"],
+            capture_output=True, creationflags=CREATE_NO_WINDOW,
+        )
+
+
 def unmount_drive(letter: str) -> tuple[bool, str]:
     letter = letter.upper().rstrip(":")
     rc, out = run_hidden(["net", "use", f"{letter}:", "/delete", "/y"], timeout=20)
