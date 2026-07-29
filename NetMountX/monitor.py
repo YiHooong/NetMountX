@@ -146,13 +146,9 @@ class Monitor(threading.Thread):
                 break
             self._drain_tasks()
             if self.net_changed.is_set():
-                # 不立即 clear, 而是在 reconcile 成功完成后才清除;
-                # 防止 reconcile 期间又收到网络事件导致丢失
+                self.net_changed.clear()
                 time.sleep(NET_DEBOUNCE)
                 self.reconcile_all("网络发生变化")
-                # reconcile 完成后检查是否又收到了新事件
-                if self.net_changed.is_set():
-                    self.net_changed.clear()
             else:
                 # 程序启动的第一轮检测尊重"启动自动挂载"开关
                 allow = not self.skip_mount_once
@@ -172,18 +168,21 @@ class Monitor(threading.Thread):
                 action, letter = self.tasks.get_nowait()
             except queue.Empty:
                 return
-            drive = self.cfg.get(letter)
-            if action == "mount" and drive:
-                self._do_mount(drive, manual=True)
-            elif action == "unmount":
-                ok, msg = unmount_drive(letter)
-                log.info("手动卸载 %s: -> %s", letter, msg)
-                self._push_status(
-                    letter,
-                    DriveState.UNMOUNTED if ok else DriveState.ERROR,
-                    msg, manual=True,
-                )
-            self._push_netinfo()
+            try:
+                drive = self.cfg.get(letter)
+                if action == "mount" and drive:
+                    self._do_mount(drive, manual=True)
+                elif action == "unmount":
+                    ok, msg = unmount_drive(letter)
+                    log.info("手动卸载 %s: -> %s", letter, msg)
+                    self._push_status(
+                        letter,
+                        DriveState.UNMOUNTED if ok else DriveState.ERROR,
+                        msg, manual=True,
+                    )
+                self._push_netinfo()
+            except Exception as e:
+                log.error("处理任务 %s/%s 时出错: %s", action, letter, e)
 
     # -- 检测与调和 -----------------------------------------------------------
 
@@ -226,8 +225,10 @@ class Monitor(threading.Thread):
             if tcp_reachable(host):
                 return True, f"服务器 {ip} 在同一子网, SMB 可连接"
             return False, f"服务器 {ip} 网段匹配但 SMB 不可连接(设备不在本网络)"
-        ok = tcp_reachable(host)
-        return ok, f"服务器 {host} {'可' if ok else '不可'}连接 (SMB)"
+        ip = resolve_host(host)
+        target = ip or host
+        ok = tcp_reachable(target)
+        return ok, f"服务器 {host} ({ip or '解析失败'}) {'可' if ok else '不可'}连接 (SMB)"
 
     def _reconcile_drive(
         self, drive: dict[str, object], nets: list[tuple[str, int]] | None,

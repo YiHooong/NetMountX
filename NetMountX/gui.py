@@ -44,7 +44,7 @@ try:
         FluentIcon, FluentWindow, InfoBar, InfoBarPosition, LineEdit,
         MessageBox, MessageBoxBase, NavigationItemPosition,
         PasswordLineEdit, PlainTextEdit, PrimaryPushButton, PushButton,
-        RoundMenu, SubtitleLabel, SwitchButton, TableWidget, Theme,
+        RoundMenu, SpinBox, SubtitleLabel, SwitchButton, TableWidget, Theme,
         setTheme,
     )
 except ImportError as e:   # 缺少 GUI 依赖时仍允许 --selftest 运行
@@ -70,6 +70,7 @@ class QueueLogHandler(logging.Handler):
 
 # 仅在 GUI 可用时定义后续类
 if GUI_IMPORT_ERROR is None:
+    import collections
 
     # -----------------------------------------------------------------------
     # 工具
@@ -164,10 +165,10 @@ if GUI_IMPORT_ERROR is None:
             form.addRow("", self.chk_save)
 
             self.cmb_mode = ComboBox(self)
-            self.cmb_mode.addItems(list(MODE_LABELS.values()))
-            self.cmb_mode.setCurrentText(
-                MODE_LABELS.get(str(drive.get("mode", DriveMode.REACHABLE)))
-            )
+            for mode_val, mode_label in MODE_LABELS.items():
+                self.cmb_mode.addItem(mode_label, userData=mode_val)
+            current_mode = str(drive.get("mode", DriveMode.REACHABLE))
+            self.cmb_mode.setCurrentText(MODE_LABELS.get(current_mode, ""))
             form.addRow("挂载策略:", self.cmb_mode)
 
             self.chk_enabled = CheckBox("启用此项", self)
@@ -215,6 +216,7 @@ if GUI_IMPORT_ERROR is None:
                 )
                 return
 
+            self.btn_test.setEnabled(False)
             def work() -> None:
                 try:
                     ip = resolve_host(host)
@@ -230,6 +232,7 @@ if GUI_IMPORT_ERROR is None:
             threading.Thread(target=work, daemon=True).start()
 
         def _on_test_done(self, msg: str, ok: bool) -> None:
+            self.btn_test.setEnabled(True)
             (InfoBar.success if ok else InfoBar.error)(
                 "测试结果", msg, parent=self,
                 position=InfoBarPosition.TOP, duration=4000,
@@ -255,11 +258,7 @@ if GUI_IMPORT_ERROR is None:
             return True
 
         def result_drive(self) -> tuple[dict[str, object], str]:
-            mode: str = (
-                DriveMode.SUBNET
-                if self.cmb_mode.currentText() == MODE_LABELS[DriveMode.SUBNET]
-                else DriveMode.REACHABLE
-            )
+            mode = self.cmb_mode.currentData() or DriveMode.REACHABLE
             return {
                 "letter": self.cmb_letter.currentText().strip().upper().rstrip(":"),
                 "label": self.edt_label.text().strip(),
@@ -392,7 +391,7 @@ if GUI_IMPORT_ERROR is None:
 
         def __init__(
             self, parent: QWidget, letter: str, drive: dict,
-            status: dict, history: list[tuple[str, str, str]],
+            status: dict, history: list[tuple[str, str, str]] | collections.deque,
         ) -> None:
             super().__init__(parent)
             self.viewLayout.addWidget(
@@ -415,7 +414,7 @@ if GUI_IMPORT_ERROR is None:
                 "最近状态记录 (新的在前):",
             ]
             if history:
-                for t, st, tx in reversed(history[-30:]):
+                for t, st, tx in list(history)[-30:]:
                     lb, _c = STATE_LABELS.get(st, STATE_LABELS[""])
                     lines.append(f"[{t}] {lb} - {tx}")
             else:
@@ -483,9 +482,9 @@ if GUI_IMPORT_ERROR is None:
 
             # 驱动器表格
             self.table = TableWidget(self)
-            self.table.setColumnCount(7)
+            self.table.setColumnCount(6)
             self.table.setHorizontalHeaderLabels(
-                ["盘符", "名称", "网络路径", "挂载策略", "状态", "状态说明", "自动挂载"],
+                ["盘符", "名称", "网络路径", "挂载策略", "状态", "自动挂载"],
             )
             self.table.verticalHeader().hide()
             self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -500,18 +499,20 @@ if GUI_IMPORT_ERROR is None:
             self.table.doubleClicked.connect(lambda *_: self.edit_drive())
             self.table.cellClicked.connect(self._cell_clicked)
             header = self.table.horizontalHeader()
-            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+            
+            header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(6, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
+            
             header.resizeSection(0, 55)
-            header.resizeSection(1, 120)
+            header.resizeSection(1, 150)
+            header.resizeSection(2, 240)
             header.resizeSection(3, 160)
-            header.resizeSection(4, 60)
-            header.resizeSection(6, 80)
+            header.resizeSection(4, 120)
+            header.resizeSection(5, 80)
             v.addWidget(self.table, 3)
 
             # 日志
@@ -531,12 +532,16 @@ if GUI_IMPORT_ERROR is None:
             v.addLayout(sb)
 
             self.refresh_table()
+            self._apply_column_visibility()
 
         # -- 显示刷新 ---------------------------------------------------------
 
         def refresh_table(self) -> None:
             drives = self.main.cfg.snapshot()
-            self.table.setRowCount(len(drives))
+            current_row = self.table.currentRow()
+            need_rebuild = (self.table.rowCount() != len(drives))
+            if need_rebuild:
+                self.table.setRowCount(len(drives))
             for row, d in enumerate(drives):
                 letter = str(d["letter"]).upper()
                 st = self.main.statuses.get(letter, {})
@@ -549,41 +554,65 @@ if GUI_IMPORT_ERROR is None:
                 values = [
                     letter + ":", display_label, str(d["path"]),
                     MODE_LABELS.get(str(d.get("mode", DriveMode.REACHABLE)), ""),
-                    label, info,
+                    label + " ℹ",
                 ]
                 for col, val in enumerate(values):
-                    item = QTableWidgetItem(val)
-                    if col == 4:    # 状态列着色
+                    item = self.table.item(row, col)
+                    if item is None or need_rebuild:
+                        item = QTableWidgetItem(val)
+                        self.table.setItem(row, col, item)
+                    else:
+                        item.setText(val)
+                    if col == 4:
                         item.setForeground(QBrush(QColor(color)))
-                    self.table.setItem(row, col, item)
-                # 每盘"自动挂载"开关
-                sw = SwitchButton(self.table)
-                sw.setOnText("开")
-                sw.setOffText("关")
-                sw.setChecked(bool(d.get("auto_mount", True)))
-                sw.checkedChanged.connect(
-                    lambda checked, l=letter: self.toggle_auto_mount(l, checked),
-                )
-                wrap = QWidget(self.table)
-                hl = QHBoxLayout(wrap)
-                hl.setContentsMargins(6, 0, 6, 0)
-                hl.addWidget(sw)
-                self.table.setCellWidget(row, 6, wrap)
+                        item.setToolTip(info)
+                if need_rebuild:
+                    sw = SwitchButton(self.table)
+                    sw.setOnText("开")
+                    sw.setOffText("关")
+                    sw.setChecked(bool(d.get("auto_mount", True)))
+                    sw.checkedChanged.connect(
+                        lambda checked, l=letter: self.toggle_auto_mount(l, checked),
+                    )
+                    wrap = QWidget(self.table)
+                    hl = QHBoxLayout(wrap)
+                    hl.setContentsMargins(6, 0, 6, 0)
+                    hl.addWidget(sw)
+                    self.table.setCellWidget(row, 5, wrap)
+                else:
+                    # Update existing switch state without triggering signal
+                    wrap = self.table.cellWidget(row, 5)
+                    if wrap:
+                        sw = wrap.findChild(SwitchButton)
+                        if sw is not None:
+                            sw.blockSignals(True)
+                            sw.setChecked(bool(d.get("auto_mount", True)))
+                            sw.blockSignals(False)
+            if 0 <= current_row < self.table.rowCount():
+                self.table.setCurrentCell(current_row, 0)
+
+        def _apply_column_visibility(self) -> None:
+            """根据 cfg.settings['hidden_columns'] 显示/隐藏表格列。"""
+            hidden: list = list(self.main.cfg.settings.get("hidden_columns", []))
+            for col in range(self.table.columnCount()):
+                self.table.setColumnHidden(col, col in hidden)
 
         def _cell_clicked(self, row: int, col: int) -> None:
-            """点击"状态说明"列 -> 弹出该盘的状态详情与最近记录。"""
-            if col != 5:
+            """点击"状态"列 -> 弹出该盘的状态详情与最近记录。"""
+            if col != 4:
                 return
             item = self.table.item(row, 0)
             if not item:
                 return
             letter = item.text().rstrip(":").upper()
-            StatusDetailDialog(
+            dlg = StatusDetailDialog(
                 self.main, letter,
                 self.main.cfg.get(letter) or {},
                 self.main.statuses.get(letter, {}),
                 self.main.history.get(letter, []),
-            ).exec()
+            )
+            dlg.exec()
+            dlg.deleteLater()
 
         def toggle_auto_mount(self, letter: str, checked: bool) -> None:
             """表格"自动挂载"列开关。"""
@@ -605,9 +634,11 @@ if GUI_IMPORT_ERROR is None:
             self.main.monitor.trigger(f"{letter}: 切换自动挂载")
 
         def append_log(self, line: str) -> None:
-            self.logbox.appendPlainText(line)
             sb = self.logbox.verticalScrollBar()
-            sb.setValue(sb.maximum())
+            at_bottom = sb.value() >= sb.maximum() - 10
+            self.logbox.appendPlainText(line)
+            if at_bottom:
+                sb.setValue(sb.maximum())
 
         def set_netinfo(self, payload: dict) -> None:
             self.lbl_net.setText(
@@ -645,9 +676,11 @@ if GUI_IMPORT_ERROR is None:
                 used_letters=self._used_letters_display(),
             )
             if not dlg.exec():
+                dlg.deleteLater()
                 return
             result, password = dlg.result_drive()
             self._apply_dialog_result(result, password)
+            dlg.deleteLater()
 
         def edit_drive(self) -> None:
             letter = self._selected_letter()
@@ -660,9 +693,11 @@ if GUI_IMPORT_ERROR is None:
                 used_letters=self._used_letters_display(),
             )
             if not dlg.exec():
+                dlg.deleteLater()
                 return
             result, password = dlg.result_drive()
             self._apply_dialog_result(result, password, old_letter=letter)
+            dlg.deleteLater()
 
         def _apply_dialog_result(
             self, result: dict[str, object], password: str,
@@ -728,13 +763,17 @@ if GUI_IMPORT_ERROR is None:
             if not letter:
                 return
             drive = self.main.cfg.get(letter)
+            if not drive:
+                return
             display = str(drive.get("label") or drive["path"])
             w = MessageBox(
                 "确认删除",
                 f"删除 {letter}: ({display}) 的配置?", self.main,
             )
             if not w.exec():
+                w.deleteLater()
                 return
+            w.deleteLater()
             self.main.cfg.remove(letter)
             self.main.cfg.save()
             set_explorer_label(str(drive["path"]), "")  # 清除资源管理器自定义名称
@@ -751,11 +790,14 @@ if GUI_IMPORT_ERROR is None:
             managed = {str(d["letter"]).upper() for d in self.main.cfg.snapshot()}
             dlg = ImportDialog(self.main, mappings, managed)
             if not dlg.exec():
+                dlg.deleteLater()
                 return
             selected = dlg.selected()
             if not selected:
+                dlg.deleteLater()
                 return
             self.import_mappings(selected, "导入已挂载驱动器")
+            dlg.deleteLater()
 
         def import_mappings(
             self, selected: list[tuple[str, str]], reason: str = "导入驱动器",
@@ -817,6 +859,98 @@ if GUI_IMPORT_ERROR is None:
             log.info("软件启动时自动尝试挂载: %s", "已开启" if checked else "已关闭")
 
     # -----------------------------------------------------------------------
+    # 设置页
+    # -----------------------------------------------------------------------
+
+    class SettingsPage(QWidget):
+        """设置页面: 表格列显示、监控参数。"""
+
+        _COL_NAMES = ["盘符", "名称", "网络路径", "挂载策略", "状态", "自动挂载"]
+
+        def __init__(self, main: "MainWindow") -> None:  # noqa: F821
+            super().__init__(main)
+            self.main = main
+            self.setObjectName("settingsPage")
+
+            v = QVBoxLayout(self)
+            v.setContentsMargins(24, 16, 24, 16)
+            v.setSpacing(16)
+            v.addWidget(SubtitleLabel("设置", self))
+
+            # ── 表格显示列 ──────────────────────────────────────────────
+            v.addWidget(BodyLabel("表格显示列", self))
+            col_box = QVBoxLayout()
+            col_box.setSpacing(4)
+            self._col_checks: list[CheckBox] = []
+            hidden: list = list(self.main.cfg.settings.get("hidden_columns", []))
+            for i, name in enumerate(self._COL_NAMES):
+                cb = CheckBox(f"显示「{name}」列", self)
+                cb.setChecked(i not in hidden)
+                cb.checkStateChanged.connect(
+                    lambda state, col=i: self._toggle_column(
+                        col, state == Qt.CheckState.Checked
+                    )
+                )
+                col_box.addWidget(cb)
+                self._col_checks.append(cb)
+            v.addLayout(col_box)
+
+            # ── 监控设置 ────────────────────────────────────────────────
+            v.addWidget(BodyLabel("监控设置", self))
+            poll_row = QHBoxLayout()
+            poll_row.setSpacing(10)
+            poll_row.addWidget(CaptionLabel("轮询间隔（秒）:", self))
+            self.spin_poll = SpinBox(self)
+            self.spin_poll.setRange(15, 600)
+            self.spin_poll.setValue(
+                int(self.main.cfg.settings.get("poll_interval", 60))
+            )
+            self.spin_poll.setFixedWidth(160)
+            poll_row.addWidget(self.spin_poll)
+            poll_row.addWidget(CaptionLabel("(15 ~ 600 秒)", self))
+            poll_row.addStretch(1)
+            v.addLayout(poll_row)
+
+            btn_save = PrimaryPushButton("保存轮询设置", self)
+            btn_save.setFixedWidth(140)
+            btn_save.clicked.connect(self._save_poll)
+            v.addWidget(btn_save)
+
+            v.addStretch(1)
+
+        def _toggle_column(self, col: int, checked: bool) -> None:
+            """立即切换列可见性并持久化。"""
+            hidden = list(self.main.cfg.settings.get("hidden_columns", []))
+            if checked:
+                if col in hidden:
+                    hidden.remove(col)
+            else:
+                if col not in hidden:
+                    hidden.append(col)
+            self.main.cfg.settings["hidden_columns"] = hidden
+            try:
+                self.main.cfg.save()
+            except Exception as e:
+                log.warning("保存列设置失败: %s", e)
+            self.main.page._apply_column_visibility()
+
+        def _save_poll(self) -> None:
+            """保存轮询间隔设置。"""
+            val = self.spin_poll.value()
+            self.main.cfg.settings["poll_interval"] = val
+            try:
+                self.main.cfg.save()
+                InfoBar.success(
+                    "保存成功", f"轮询间隔已设为 {val} 秒, 下一轮起生效",
+                    parent=self.main, position=InfoBarPosition.TOP, duration=2500,
+                )
+            except Exception as e:
+                InfoBar.error(
+                    "保存失败", str(e),
+                    parent=self.main, position=InfoBarPosition.TOP, duration=3000,
+                )
+
+    # -----------------------------------------------------------------------
 
     class AboutPage(QWidget):
         def __init__(self, main: QWidget) -> None:
@@ -856,12 +990,17 @@ if GUI_IMPORT_ERROR is None:
             self.cfg = Config.load()
             self.ui_q: queue.Queue = queue.Queue()
             self.statuses: dict[str, dict] = {}
-            self.history: dict[str, list[tuple[str, str, str]]] = {}
+            self.history: dict[str, collections.deque] = {}
 
             self.page = DrivePage(self)
+            self.settings_page = SettingsPage(self)
             self.about = AboutPage(self)
             self.addSubInterface(
                 self.page, FluentIcon.FOLDER, "驱动器管理",
+            )
+            self.addSubInterface(
+                self.settings_page, FluentIcon.SETTING, "设置",
+                position=NavigationItemPosition.BOTTOM,
             )
             self.addSubInterface(
                 self.about, FluentIcon.INFO, "关于",
@@ -903,21 +1042,19 @@ if GUI_IMPORT_ERROR is None:
                     elif kind == "status":
                         letter = payload["letter"]
                         self.statuses[letter] = payload
-                        hist = self.history.setdefault(letter, [])
+                        hist = self.history.setdefault(letter, collections.deque(maxlen=50))
                         hist.append((
                             str(payload.get("time", "")),
                             str(payload.get("state", "")),
                             str(payload.get("text", "")),
                         ))
-                        if len(hist) > 50:
-                            del hist[:-50]
                         if payload.get("manual"):
                             self._notify_status(letter, payload)
                         self.page.refresh_table()
                     elif kind == "netinfo":
                         self.page.set_netinfo(payload)
                     elif kind == "startup_scan":
-                        self._show_startup_scan(payload)
+                        QTimer.singleShot(0, lambda p=payload: self._show_startup_scan(p))
             except queue.Empty:
                 pass
 
@@ -950,10 +1087,12 @@ if GUI_IMPORT_ERROR is None:
             )
             dlg = StartupScanDialog(self, items, self.cfg)
             if not dlg.exec():
+                dlg.deleteLater()
                 return
             selected = dlg.selected()
             if selected:
                 self.page.import_mappings(selected, "导入启动扫描发现的驱动器")
+            dlg.deleteLater()
 
         def _notify_status(self, letter: str, st: dict) -> None:
             state, text = str(st["state"]), str(st["text"])
@@ -1031,7 +1170,9 @@ if GUI_IMPORT_ERROR is None:
             else:
                 w = MessageBox("退出", "退出程序并停止后台监控?", self)
                 if w.exec():
+                    self.hide()
                     self.quit_app()
+                w.deleteLater()
                 event.ignore()
 
         def quit_app(self) -> None:

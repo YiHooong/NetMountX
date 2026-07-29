@@ -12,6 +12,7 @@ import os
 import re
 import socket
 import subprocess
+import threading
 from ctypes import wintypes
 from typing import Any
 
@@ -58,6 +59,18 @@ def run_hidden(cmd: list[str], timeout: float = 15) -> tuple[int, str]:
 # WNet API (盘符映射查询)
 # ---------------------------------------------------------------------------
 
+class NETRESOURCE(ctypes.Structure):
+    _fields_ = [
+        ("dwScope", wintypes.DWORD),
+        ("dwType", wintypes.DWORD),
+        ("dwDisplayType", wintypes.DWORD),
+        ("dwUsage", wintypes.DWORD),
+        ("lpLocalName", wintypes.LPWSTR),
+        ("lpRemoteName", wintypes.LPWSTR),
+        ("lpComment", wintypes.LPWSTR),
+        ("lpProvider", wintypes.LPWSTR),
+    ]
+
 _mpr: Any = None
 
 
@@ -65,6 +78,14 @@ def _get_mpr() -> Any:
     global _mpr
     if _mpr is None:
         _mpr = ctypes.WinDLL("mpr")
+        _mpr.WNetAddConnection2W.argtypes = [
+            ctypes.POINTER(NETRESOURCE), wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD
+        ]
+        _mpr.WNetAddConnection2W.restype = wintypes.DWORD
+        _mpr.WNetCancelConnection2W.argtypes = [
+            wintypes.LPCWSTR, wintypes.DWORD, wintypes.BOOL
+        ]
+        _mpr.WNetCancelConnection2W.restype = wintypes.DWORD
     return _mpr
 
 
@@ -106,10 +127,16 @@ def list_system_mappings() -> list[tuple[str, str]]:
 def drive_accessible(letter: str) -> bool:
     """盘符当前可访问(已连接); 已断开但保留映射的网络驱动器返回 False。"""
     root = letter.upper().rstrip(":") + ":\\"
-    try:
-        return os.path.isdir(root)
-    except Exception:
-        return False
+    result = [False]
+    def _check():
+        try:
+            result[0] = os.path.isdir(root)
+        except Exception:
+            pass
+    t = threading.Thread(target=_check, daemon=True)
+    t.start()
+    t.join(timeout=2.0)
+    return result[0]
 
 
 def list_remembered_mappings() -> list[tuple[str, str]]:
@@ -297,6 +324,11 @@ def get_local_networks_safe() -> list[tuple[str, int]] | None:
 
 
 def get_default_gateway() -> str:
+    rc, out = run_hidden(["route", "print", "-4"], timeout=10)
+    for line in out.splitlines():
+        parts = line.split()
+        if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
+            return parts[2]
     ps = (
         "Get-NetRoute -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue | "
         "Sort-Object RouteMetric,InterfaceMetric | "
@@ -307,11 +339,6 @@ def get_default_gateway() -> str:
     )
     if rc == 0 and re.match(r"^\d{1,3}(\.\d{1,3}){3}$", out.strip()):
         return out.strip()
-    rc, out = run_hidden(["route", "print", "-4"], timeout=10)
-    for line in out.splitlines():
-        parts = line.split()
-        if len(parts) >= 3 and parts[0] == "0.0.0.0" and parts[1] == "0.0.0.0":
-            return parts[2]
     return ""
 
 
@@ -333,22 +360,33 @@ def mount_drive(
         return False, f"盘符 {letter}: 已被 {remote} 占用"
     if username and password:
         if save_cred:
+            # Keep cmdkey call for saving credentials. It's fast so exposure is minimal.
             host = server_from_unc(unc)
             run_hidden(
                 ["cmdkey", f"/add:{host}", f"/user:{username}", f"/pass:{password}"],
                 timeout=10,
             )
-        cmd: list[str] = [
-            "net", "use", f"{letter}:", unc, password, f"/user:{username}",
-            "/persistent:no",
-        ]
-    else:
-        # 匿名共享, 或凭据此前已存入 Windows 凭据管理器
-        cmd = ["net", "use", f"{letter}:", unc, "/persistent:no"]
-    rc, out = run_hidden(cmd, timeout=30)
+            
+    nr = NETRESOURCE()
+    nr.dwType = 1  # RESOURCETYPE_DISK
+    nr.lpLocalName = f"{letter}:"
+    nr.lpRemoteName = unc
+    
+    rc = _get_mpr().WNetAddConnection2W(ctypes.byref(nr), password or None, username or None, 0)
     if rc == 0 and get_mapped_remote(letter):
         return True, "挂载成功"
-    return False, (out.splitlines()[-1] if out else f"net use 返回码 {rc}")
+        
+    err_msg = {
+        5: "拒绝访问 (5)",
+        53: "找不到网络路径 (53)",
+        67: "找不到网络名 (67)",
+        85: "本地设备名已在使用 (85)",
+        86: "网络密码不正确 (86)",
+        1219: "提供的凭据与已存在的凭据冲突 (1219)",
+        1326: "登录失败: 未知的用户名或错误密码 (1326)",
+        2250: "此网络连接不存在 (2250)",
+    }.get(rc, f"WNetAddConnection2W 错误码 {rc}")
+    return False, err_msg
 
 
 def unc_to_mountpoints_key(unc: str) -> str:
@@ -384,7 +422,7 @@ def set_explorer_label(unc: str, label: str) -> None:
 
 def unmount_drive(letter: str) -> tuple[bool, str]:
     letter = letter.upper().rstrip(":")
-    rc, out = run_hidden(["net", "use", f"{letter}:", "/delete", "/y"], timeout=20)
+    rc = _get_mpr().WNetCancelConnection2W(f"{letter}:", 0, True)
     if get_mapped_remote(letter) is None:
         return True, "已卸载"
-    return False, (out.splitlines()[-1] if out else "卸载失败")
+    return False, f"卸载失败, 错误码 {rc}"

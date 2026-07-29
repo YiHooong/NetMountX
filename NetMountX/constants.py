@@ -48,6 +48,7 @@ DEFAULT_SETTINGS: dict[str, object] = {
     "poll_interval": 60,
     "tray": True,
     "auto_mount_on_start": True,
+    "hidden_columns": [],       # 隐藏列的索引列表
 }
 
 # 注册表路径
