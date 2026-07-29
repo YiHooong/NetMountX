@@ -500,11 +500,13 @@ if GUI_IMPORT_ERROR is None:
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Interactive)
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
             header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
+            # 名称列给足默认宽度, 网络路径列按内容自适应
+            header.resizeSection(1, 130)
             v.addWidget(self.table, 3)
 
             # 日志
