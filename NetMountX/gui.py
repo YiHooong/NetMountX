@@ -136,6 +136,12 @@ if GUI_IMPORT_ERROR is None:
                 cap.setTextColor(QColor(0x6e, 0x77, 0x81), QColor(0x9a, 0x9a, 0x9a))
                 form.addRow("", cap)
 
+            self.edt_label = LineEdit(self)
+            self.edt_label.setPlaceholderText("留空则显示网络路径")
+            self.edt_label.setText(str(drive.get("label", "")))
+            self.edt_label.setClearButtonEnabled(True)
+            form.addRow("名称:", self.edt_label)
+
             self.edt_path = LineEdit(self)
             self.edt_path.setPlaceholderText(r"形如 \\NAS\共享文件夹")
             self.edt_path.setText(str(drive.get("path", "")))
@@ -254,6 +260,7 @@ if GUI_IMPORT_ERROR is None:
             )
             return {
                 "letter": self.cmb_letter.currentText().strip().upper().rstrip(":"),
+                "label": self.edt_label.text().strip(),
                 "path": self.edt_path.text().strip(),
                 "username": self.edt_user.text().strip(),
                 "save_cred": self.chk_save.isChecked(),
@@ -396,6 +403,7 @@ if GUI_IMPORT_ERROR is None:
                 f"状态说明: {status.get('text') or '-'}",
                 f"更新时间: {status.get('time') or '-'}",
                 "",
+                f"名称: {drive.get('label') or drive.get('path', '-')}",
                 f"网络路径: {drive.get('path', '-')}",
                 f"挂载策略: {MODE_LABELS.get(str(drive.get('mode', DriveMode.REACHABLE)), '-')}",
                 f"自动挂载: {'开' if drive.get('auto_mount', True) else '关'}",
@@ -473,9 +481,9 @@ if GUI_IMPORT_ERROR is None:
 
             # 驱动器表格
             self.table = TableWidget(self)
-            self.table.setColumnCount(6)
+            self.table.setColumnCount(7)
             self.table.setHorizontalHeaderLabels(
-                ["盘符", "网络路径", "挂载策略", "状态", "状态说明", "自动挂载"],
+                ["盘符", "名称", "网络路径", "挂载策略", "状态", "状态说明", "自动挂载"],
             )
             self.table.verticalHeader().hide()
             self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
@@ -491,11 +499,12 @@ if GUI_IMPORT_ERROR is None:
             self.table.cellClicked.connect(self._cell_clicked)
             header = self.table.horizontalHeader()
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
-            header.setSectionResizeMode(4, QHeaderView.ResizeMode.Stretch)
-            header.setSectionResizeMode(5, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(4, QHeaderView.ResizeMode.ResizeToContents)
+            header.setSectionResizeMode(5, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(6, QHeaderView.ResizeMode.ResizeToContents)
             v.addWidget(self.table, 3)
 
             # 日志
@@ -529,14 +538,15 @@ if GUI_IMPORT_ERROR is None:
                 info = str(st.get("text", ""))
                 if st.get("time"):
                     info = f"[{st['time']}] {info}"
+                display_label = str(d.get("label") or d["path"])
                 values = [
-                    letter + ":", str(d["path"]),
+                    letter + ":", display_label, str(d["path"]),
                     MODE_LABELS.get(str(d.get("mode", DriveMode.REACHABLE)), ""),
                     label, info,
                 ]
                 for col, val in enumerate(values):
                     item = QTableWidgetItem(val)
-                    if col == 3:
+                    if col == 4:    # 状态列着色
                         item.setForeground(QBrush(QColor(color)))
                     self.table.setItem(row, col, item)
                 # 每盘"自动挂载"开关
@@ -551,11 +561,11 @@ if GUI_IMPORT_ERROR is None:
                 hl = QHBoxLayout(wrap)
                 hl.setContentsMargins(6, 0, 6, 0)
                 hl.addWidget(sw)
-                self.table.setCellWidget(row, 5, wrap)
+                self.table.setCellWidget(row, 6, wrap)
 
         def _cell_clicked(self, row: int, col: int) -> None:
             """点击"状态说明"列 -> 弹出该盘的状态详情与最近记录。"""
-            if col != 4:
+            if col != 5:
                 return
             item = self.table.item(row, 0)
             if not item:
