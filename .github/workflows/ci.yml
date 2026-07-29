@@ -1,0 +1,68 @@
+name: CI
+
+on:
+  push:
+    branches: [master]
+    tags: ['v*']
+  pull_request:
+    branches: [master]
+
+jobs:
+  # ------------------------------------------------------------------
+  # Linux: 快速语法检查
+  # ------------------------------------------------------------------
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Syntax check all Python files
+        run: |
+          python -m py_compile netmountx.py
+          for f in NetMountX/*.py; do
+            python -m py_compile "$f" && echo "OK  $f"
+          done
+
+      - name: Verify importable modules (non-Windows)
+        run: |
+          python -c "from NetMountX.constants import DriveMode, DriveState; print('constants OK')"
+          python -c "from NetMountX.config import Config; print('config OK')"
+
+  # ------------------------------------------------------------------
+  # Windows: 自检 + 打包 exe（仅 tag 触发）
+  # ------------------------------------------------------------------
+  build:
+    needs: check
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+
+      - name: Install dependencies
+        run: pip install pyinstaller PyQt6-Fluent-Widgets
+
+      - name: Run selftest
+        env:
+          PYTHONIOENCODING: utf-8
+        run: python -m NetMountX --selftest
+
+      - name: Build exe
+        env:
+          PYTHONIOENCODING: utf-8
+        run: |
+          pyinstaller --noconfirm --clean --onefile --windowed --name NetMountX --icon NetMountX\netmountx.ico --add-data "NetMountX\netmountx.ico;." --collect-data qfluentwidgets netmountx.py
+
+      - name: Upload exe to release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/NetMountX.exe
