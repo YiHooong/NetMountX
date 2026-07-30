@@ -40,7 +40,7 @@ GUI: PyQt6 + PyQt-Fluent-Widgets
 import os
 import sys
 
-__version__ = "1.4.2"
+__version__ = "1.5.3"
 APP_NAME = "NetMountX"
 OLD_APP_NAME = "NetDriveKeeper"   # 旧版名称, 用于一次性迁移配置目录和自启动项
 APP_TITLE = "NetMountX - 网络驱动器自动挂载"
