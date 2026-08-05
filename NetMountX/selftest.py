@@ -21,6 +21,11 @@ from .core import (
     used_drive_letters,
 )
 from .monitor import Monitor, NetworkChangeWatcher
+from .gui import (
+    initial_window_size,
+    responsive_column_widths,
+    table_minimum_content_width,
+)
 
 
 def selftest() -> int:
@@ -154,6 +159,14 @@ def selftest() -> int:
             Monitor._check_reachable = saved_check  # type: ignore[assignment]
             Monitor._do_mount = saved_do_mount  # type: ignore[assignment]
 
+    def t_ui_layout_rules() -> None:
+        """窗口和表格的响应式尺寸约束不依赖 GUI 环境。"""
+        assert table_minimum_content_width() >= 855, "表格列最小宽度不足"
+        assert initial_window_size(False) == (980, 660)
+        assert initial_window_size(True) == (980, 660)
+        narrow = responsive_column_widths(700, range(6))
+        assert narrow[1] == 160 and narrow[2] == 280, "内容列不应被压缩"
+
     t("配置读写", t_config)
     t("WNet 映射查询", t_wnet)
     t("UNC 解析", t_unc)
@@ -167,6 +180,7 @@ def selftest() -> int:
     t("忽略列表读写", t_ignore_list)
     t("启动扫描(未管理设备)", t_startup_scan)
     t("每盘自动挂载开关", t_per_drive_auto_mount)
+    t("界面尺寸约束", t_ui_layout_rules)
 
     def _safe_print(s: str) -> None:
         """跨编码安全打印: 优先 stdout 编码, 失败则转 ASCII。"""

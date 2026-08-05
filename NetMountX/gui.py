@@ -5,6 +5,7 @@ import logging
 import os
 import queue
 import threading
+from collections.abc import Iterable
 
 from . import APP_NAME, APP_TITLE, CONFIG_DIR, CONFIG_FILE, LOG_FILE, __version__
 from .autostart import autostart_enabled, set_autostart
@@ -26,6 +27,48 @@ from .core import (
 from .monitor import Monitor
 
 log = logging.getLogger("NetMountX")
+
+
+# 主窗口与驱动器表格的尺寸约束。内容列的最小宽度之和大于窄窗口
+# 的可用宽度时，Qt 会保留水平滚动条，而不是继续压缩文字。
+WINDOW_MINIMUM_SIZE = (900, 600)
+WINDOW_DEFAULT_SIZE = (980, 660)
+TABLE_COLUMN_MINIMUM_WIDTHS = (55, 160, 280, 160, 120, 80)
+RESPONSIVE_CONTENT_COLUMNS = (1, 2)
+
+
+def table_minimum_content_width() -> int:
+    """返回所有驱动器表格列按最小宽度显示时需要的宽度。"""
+    return sum(TABLE_COLUMN_MINIMUM_WIDTHS)
+
+
+def initial_window_size(minimized: bool) -> tuple[int, int]:
+    """返回正常和托盘首次显示共用的安全初始窗口尺寸。"""
+    del minimized  # 两条启动路径必须使用相同的初始显示尺寸。
+    return (
+        max(WINDOW_DEFAULT_SIZE[0], WINDOW_MINIMUM_SIZE[0]),
+        max(WINDOW_DEFAULT_SIZE[1], WINDOW_MINIMUM_SIZE[1]),
+    )
+
+
+def responsive_column_widths(
+    viewport_width: int, visible_columns: Iterable[int],
+) -> dict[int, int]:
+    """计算可见列宽，额外宽度由名称和网络路径平分。"""
+    visible = set(visible_columns)
+    widths = {
+        col: TABLE_COLUMN_MINIMUM_WIDTHS[col]
+        for col in visible
+    }
+    flexible = [col for col in RESPONSIVE_CONTENT_COLUMNS if col in visible]
+    if not flexible:
+        return widths
+
+    extra = max(0, viewport_width - sum(widths.values()))
+    share, remainder = divmod(extra, len(flexible))
+    for index, col in enumerate(flexible):
+        widths[col] += share + (1 if index < remainder else 0)
+    return widths
 
 # ---------------------------------------------------------------------------
 # GUI 依赖检查
@@ -75,6 +118,10 @@ if GUI_IMPORT_ERROR is None:
     # -----------------------------------------------------------------------
     # 工具
     # -----------------------------------------------------------------------
+
+    def preserve_natural_width(widget: QWidget) -> None:
+        """锁定工具栏控件的自然宽度，避免窗口缩小时文字被挤压。"""
+        widget.setMinimumWidth(widget.sizeHint().width())
 
     def make_app_icon() -> QIcon:
         """应用图标: 优先加载 netmountx.ico, 缺失时回退到程序绘制图标。"""
@@ -449,6 +496,7 @@ if GUI_IMPORT_ERROR is None:
             bar = QHBoxLayout()
             self.btn_add = PrimaryPushButton("添加", self)
             self.btn_add.clicked.connect(self.add_drive)
+            preserve_natural_width(self.btn_add)
             bar.addWidget(self.btn_add)
             for text, slot in [
                 ("编辑", self.edit_drive),
@@ -460,16 +508,22 @@ if GUI_IMPORT_ERROR is None:
             ]:
                 btn = PushButton(text, self)
                 btn.clicked.connect(slot)
+                preserve_natural_width(btn)
                 bar.addWidget(btn)
             bar.addStretch(1)
-            bar.addWidget(BodyLabel("开机自动运行", self))
+            lbl_autostart = BodyLabel("开机自动运行", self)
+            preserve_natural_width(lbl_autostart)
+            bar.addWidget(lbl_autostart)
             self.sw_autostart = SwitchButton(self)
             self.sw_autostart.setOnText("开")
             self.sw_autostart.setOffText("关")
             self.sw_autostart.setChecked(autostart_enabled())
             self.sw_autostart.checkedChanged.connect(self.toggle_autostart)
+            preserve_natural_width(self.sw_autostart)
             bar.addWidget(self.sw_autostart)
-            bar.addWidget(BodyLabel("启动自动挂载", self))
+            lbl_mount_start = BodyLabel("启动自动挂载", self)
+            preserve_natural_width(lbl_mount_start)
+            bar.addWidget(lbl_mount_start)
             self.sw_mount_start = SwitchButton(self)
             self.sw_mount_start.setOnText("开")
             self.sw_mount_start.setOffText("关")
@@ -477,8 +531,13 @@ if GUI_IMPORT_ERROR is None:
                 bool(self.main.cfg.settings.get("auto_mount_on_start", True)),
             )
             self.sw_mount_start.checkedChanged.connect(self.toggle_mount_on_start)
+            preserve_natural_width(self.sw_mount_start)
             bar.addWidget(self.sw_mount_start)
             v.addLayout(bar)
+            self._toolbar_minimum_width = (
+                bar.minimumSize().width() + v.contentsMargins().left()
+                + v.contentsMargins().right()
+            )
 
             # 驱动器表格
             self.table = TableWidget(self)
@@ -496,23 +555,23 @@ if GUI_IMPORT_ERROR is None:
             )
             self.table.setBorderVisible(True)
             self.table.setBorderRadius(8)
+            self.table.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAsNeeded,
+            )
             self.table.doubleClicked.connect(lambda *_: self.edit_drive())
             self.table.cellClicked.connect(self._cell_clicked)
             header = self.table.horizontalHeader()
-            
+            header.setDefaultAlignment(Qt.AlignmentFlag.AlignCenter)
+            header.setStretchLastSection(False)
             header.setSectionResizeMode(0, QHeaderView.ResizeMode.Fixed)
-            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
-            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+            header.setSectionResizeMode(1, QHeaderView.ResizeMode.Fixed)
+            header.setSectionResizeMode(2, QHeaderView.ResizeMode.Fixed)
             header.setSectionResizeMode(3, QHeaderView.ResizeMode.Fixed)
             header.setSectionResizeMode(4, QHeaderView.ResizeMode.Fixed)
             header.setSectionResizeMode(5, QHeaderView.ResizeMode.Fixed)
-            
-            header.resizeSection(0, 55)
-            header.resizeSection(1, 150)
-            header.resizeSection(2, 240)
-            header.resizeSection(3, 160)
-            header.resizeSection(4, 120)
-            header.resizeSection(5, 80)
+
+            for col, width in enumerate(TABLE_COLUMN_MINIMUM_WIDTHS):
+                header.resizeSection(col, width)
             v.addWidget(self.table, 3)
 
             # 日志
@@ -533,6 +592,36 @@ if GUI_IMPORT_ERROR is None:
 
             self.refresh_table()
             self._apply_column_visibility()
+            QTimer.singleShot(0, self._resize_content_columns)
+
+        def resizeEvent(self, event) -> None:  # type: ignore[override]
+            super().resizeEvent(event)
+            self._resize_content_columns()
+
+        def _sync_window_minimum_width(self) -> None:
+            """把工具栏完整显示所需宽度传递给主窗口的最小尺寸。"""
+            required = max(
+                WINDOW_MINIMUM_SIZE[0], self.main.minimumSizeHint().width(),
+                self._toolbar_minimum_width,
+            )
+            self.main.setMinimumWidth(required)
+            if self.main.width() < required:
+                self.main.resize(required, self.main.height())
+
+        def _resize_content_columns(self) -> None:
+            """让名称和路径平分额外空间；空间不足时保留水平滚动。"""
+            visible = [
+                col for col in range(self.table.columnCount())
+                if not self.table.isColumnHidden(col)
+            ]
+            widths = responsive_column_widths(
+                self.table.viewport().width(), visible,
+            )
+            for col in RESPONSIVE_CONTENT_COLUMNS:
+                if col in widths:
+                    self.table.horizontalHeader().resizeSection(
+                        col, widths[col],
+                    )
 
         # -- 显示刷新 ---------------------------------------------------------
 
@@ -566,6 +655,10 @@ if GUI_IMPORT_ERROR is None:
                     if col == 4:
                         item.setForeground(QBrush(QColor(color)))
                         item.setToolTip(info)
+                        item.setTextAlignment(int(
+                            Qt.AlignmentFlag.AlignHCenter
+                            | Qt.AlignmentFlag.AlignVCenter,
+                        ))
                 if need_rebuild:
                     sw = SwitchButton(self.table)
                     sw.setOnText("开")
@@ -590,6 +683,7 @@ if GUI_IMPORT_ERROR is None:
                             sw.blockSignals(False)
             if 0 <= current_row < self.table.rowCount():
                 self.table.setCurrentCell(current_row, 0)
+            self._resize_content_columns()
 
         def _apply_column_visibility(self) -> None:
             """根据 cfg.settings['hidden_columns'] 显示/隐藏表格列。"""
@@ -933,6 +1027,7 @@ if GUI_IMPORT_ERROR is None:
             except Exception as e:
                 log.warning("保存列设置失败: %s", e)
             self.main.page._apply_column_visibility()
+            self.main.page._resize_content_columns()
 
         def _save_poll(self) -> None:
             """保存轮询间隔设置。"""
@@ -983,7 +1078,9 @@ if GUI_IMPORT_ERROR is None:
             self.navigationInterface.setExpandWidth(220)
             self.navigationInterface.setMinimumExpandWidth(99999)
             self.setWindowTitle(APP_TITLE)
-            self.resize(980, 660)
+            self.setMinimumSize(*WINDOW_MINIMUM_SIZE)
+            self.resize(*initial_window_size(minimized))
+            self._first_show_from_tray = minimized
             self._really_quit = False
             self._tray_hint_shown = False
 
@@ -1007,6 +1104,7 @@ if GUI_IMPORT_ERROR is None:
                 position=NavigationItemPosition.BOTTOM,
             )
             self.navigationInterface.panel.setReturnButtonVisible(False)
+            self.page._sync_window_minimum_width()
 
             h = QueueLogHandler(self.ui_q)
             h.setFormatter(logging.Formatter(
@@ -1148,6 +1246,9 @@ if GUI_IMPORT_ERROR is None:
 
         def _show_window(self) -> None:
             self.showNormal()
+            if self._first_show_from_tray:
+                self.resize(*initial_window_size(True))
+                self._first_show_from_tray = False
             self.raise_()
             self.activateWindow()
 
